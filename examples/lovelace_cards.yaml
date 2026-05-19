@@ -1,0 +1,84 @@
+# Example Lovelace cards for Wilma School AI
+
+## Upcoming Parsed Events
+
+Shows events extracted by the LLM parser, split into trusted and review-needed tiers.
+
+```yaml
+type: markdown
+title: Tulevat tapahtumat
+content: >
+  {% set events = state_attr('sensor.wilma_parser_events', 'events') or [] %}
+  {% set upcoming = events | selectattr('date_start', 'ge', now().strftime('%Y-%m-%d')) | list %}
+  {% if upcoming %}
+  {% for e in upcoming[:10] %}
+  - **{{ e.date_start[8:] }}.{{ e.date_start[5:7] }}.{{ e.date_start[:4] }}** — {{ e.title }}
+  {%- if e.notes %} · _{{ e.notes[:60] }}_{% endif %}
+  {%- if e.date_source in ['weekday_only', 'inferred_weekday_in_anchor'] %} ⚠️{% endif %}
+
+  {% endfor %}
+  {% else %}
+  Ei tulevia tapahtumia.
+  {% endif %}
+```
+
+## Exam Countdown
+
+```yaml
+type: conditional
+conditions:
+  - entity: binary_sensor.wilma_exam_today
+    state: "on"
+card:
+  type: markdown
+  title: "⚠️ Koe tänään!"
+  content: >
+    {% set exams = state_attr('sensor.wilma_child_exams', 'exams') or [] %}
+    {% for e in exams if e.date_iso == now().strftime('%Y-%m-%d') %}
+    - {{ e.topic }} ({{ e.subject }})
+    {% endfor %}
+```
+
+## Parser Health Status
+
+```yaml
+type: entities
+title: Wilma Parser
+entities:
+  - entity: binary_sensor.wilma_parser_healthy
+    name: Parser status
+  - entity: sensor.wilma_parser_events
+    name: Total events
+  - entity: sensor.wilma_parser_unsynced
+    name: Pending sync
+```
+
+## Schedule Calendar (Today)
+
+Uses `atomic-calendar-revive` custom card:
+
+```yaml
+type: custom:atomic-calendar-revive
+entities:
+  - entity: calendar.wilma_child_schedule
+    name: Lukujärjestys
+maxDaysToShow: 1
+showFullDayProgress: true
+showProgressBar: true
+showCurrentEventLine: true
+```
+
+## Messages List (Accordion)
+
+Simple message overview:
+
+```yaml
+type: markdown
+title: Viimeisimmät viestit
+content: >
+  {% set msgs = state_attr('sensor.wilma_child_messages', 'messages') or [] %}
+  {% for m in msgs[:5] %}
+  **{{ m.sender }}** ({{ m.sent[:10] }})
+  _{{ m.subject }}_
+  {% endfor %}
+```

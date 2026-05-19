@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Wilma",
+        "description": "Enter your Wilma school portal URL and login credentials.",
+        "data": {
+          "base_url": "Wilma URL (e.g. https://yourschool.inschool.fi)",
+          "username": "Username (email)",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Wilma. Check the URL and try again.",
+      "invalid_auth": "Login failed. Check your username and password.",
+      "no_children": "Login succeeded but no children were found on this account.",
+      "unknown": "Unexpected error. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This Wilma account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Wilma options",
+        "data": {
+          "scan_interval": "Poll interval (seconds)",
+          "sender_filters": "Message sender filters (comma-separated, e.g. *smith*, *jane*) — leave blank for all",
+          "message_limit": "Max messages to fetch per child per poll"
+        }
+      }
+    }
+  }
+}

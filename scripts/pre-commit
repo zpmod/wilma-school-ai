@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pre-commit hook: scan for PII before allowing commit.
+# Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+python3 scripts/scan_pii.py
+exit $?

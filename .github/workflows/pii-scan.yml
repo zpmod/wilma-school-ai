@@ -1,0 +1,40 @@
+name: PII Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pii-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan for PII patterns
+        run: |
+          # Scan all files (not just staged)
+          python3 -c "
+          import scripts.scan_pii as s
+          import os
+          findings = {}
+          for root, dirs, files in os.walk('.'):
+              dirs[:] = [d for d in dirs if d not in {'.git', '__pycache__', 'node_modules', '.venv'}]
+              for f in files:
+                  path = os.path.join(root, f)
+                  if any(path.endswith(ext) for ext in s.SKIP_EXTENSIONS):
+                      continue
+                  result = s.scan_file(path)
+                  if result:
+                      findings[path] = result
+          if findings:
+              print('⚠️  PII DETECTED!')
+              for path, items in findings.items():
+                  for line_no, name, match in items:
+                      print(f'  {path}:L{line_no} [{name}]')
+              exit(1)
+          print('✓ No PII patterns detected.')
+          "

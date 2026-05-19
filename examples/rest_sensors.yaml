@@ -1,0 +1,38 @@
+# Example: REST sensors for parser status
+#
+# Add to your configuration.yaml under `rest:`
+
+rest:
+  # Parser events — all extracted events for dashboard cards
+  - resource: "http://localhost:8090/events"
+    scan_interval: 300
+    sensor:
+      - name: "Wilma Parser Events"
+        unique_id: wilma_parser_events
+        value_template: "{{ value_json.events | count }}"
+        json_attributes:
+          - events
+          - stats
+
+  # Unsynced events — polled to push into calendar
+  - resource: "http://localhost:8090/events/unsynced"
+    scan_interval: 180
+    sensor:
+      - name: "Wilma Parser Unsynced"
+        unique_id: wilma_parser_unsynced
+        value_template: "{{ value_json.events | count }}"
+        json_attributes:
+          - events
+
+  # Health check
+  - resource: "http://localhost:8090/healthz"
+    scan_interval: 60
+    binary_sensor:
+      - name: "Wilma Parser Healthy"
+        unique_id: wilma_parser_healthy
+        device_class: connectivity
+        value_template: "{{ value_json.ok }}"
+    sensor:
+      - name: "Wilma Parser Model"
+        unique_id: wilma_parser_model
+        value_template: "{{ value_json.model }}"

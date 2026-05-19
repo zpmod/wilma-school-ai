@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Yhdistä Wilmaan",
+        "description": "Syötä koulun Wilma-portaalin osoite ja kirjautumistiedot.",
+        "data": {
+          "base_url": "Wilman osoite (esim. https://koulusi.inschool.fi)",
+          "username": "Käyttäjätunnus (sähköposti)",
+          "password": "Salasana"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Wilmaan ei saatu yhteyttä. Tarkista osoite.",
+      "invalid_auth": "Kirjautuminen epäonnistui. Tarkista tunnukset.",
+      "no_children": "Kirjautuminen onnistui, mutta tilistä ei löytynyt lapsia.",
+      "unknown": "Odottamaton virhe. Tarkista Home Assistantin lokit."
+    },
+    "abort": {
+      "already_configured": "Tämä Wilma-tili on jo määritetty."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Wilma-asetukset",
+        "data": {
+          "scan_interval": "Kyselyväli (sekuntia)",
+          "sender_filters": "Lähettäjäsuodattimet (pilkuilla, esim. *sukunimi*)",
+          "message_limit": "Viestien enimmäismäärä per lapsi"
+        }
+      }
+    }
+  }
+}

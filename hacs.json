@@ -1,0 +1,8 @@
+{
+  "name": "Wilma School AI",
+  "render_readme": true,
+  "domains": ["sensor", "calendar", "binary_sensor"],
+  "country": ["FI"],
+  "homeassistant": "2024.1.0",
+  "iot_class": "cloud_polling"
+}

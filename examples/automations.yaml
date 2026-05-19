@@ -1,0 +1,89 @@
+# Example: Automations for Wilma School AI
+#
+# Add these to your automations.yaml (or via the HA Automations UI).
+# Adjust entity IDs to match your setup.
+
+# 1. Parse new Wilma messages via the parser sidecar
+- id: wilma_parse_new_message
+  alias: "Wilma — Parse new message"
+  description: "Sends each new Wilma message to the parser for event extraction."
+  mode: parallel
+  max: 5
+  trigger:
+    - platform: event
+      event_type: wilma_new_message
+  action:
+    - service: rest_command.parse_wilma_message
+      data:
+        message_id: "{{ trigger.event.data.id }}"
+        sent: "{{ trigger.event.data.sent }}"
+        sender: "{{ trigger.event.data.sender }}"
+        subject: "{{ trigger.event.data.subject }}"
+        body: "{{ trigger.event.data.body | default('') }}"
+
+# 2. Sync parsed events to HA calendar (polls every 3 min)
+- id: wilma_parser_sync_events
+  alias: "Wilma — Sync parsed events to calendar"
+  description: "Creates calendar entries from parser's unsynced events."
+  mode: single
+  trigger:
+    - platform: time_pattern
+      minutes: "/3"
+  condition:
+    - condition: template
+      value_template: >-
+        {{ state_attr('sensor.wilma_parser_unsynced', 'events') | default([]) | count > 0 }}
+  action:
+    - variables:
+        unsynced: "{{ state_attr('sensor.wilma_parser_unsynced', 'events') }}"
+    - repeat:
+        for_each: "{{ unsynced }}"
+        sequence:
+          - service: calendar.create_event
+            target:
+              entity_id: calendar.wilma_parsed
+            data:
+              summary: "{{ repeat.item.title }}"
+              description: >-
+                {{ repeat.item.notes or '' }}
+                (source: Wilma message {{ repeat.item.message_id }})
+              start_date: "{{ repeat.item.date_start }}"
+              end_date: >-
+                {% set ds = repeat.item.date_start %}
+                {% set de = repeat.item.date_end %}
+                {% if not de or de == ds %}
+                {{ (as_datetime(ds + 'T00:00:00') + timedelta(days=1)).strftime('%Y-%m-%d') }}
+                {% else %}
+                {{ (as_datetime(de + 'T00:00:00') + timedelta(days=1)).strftime('%Y-%m-%d') }}
+                {% endif %}
+    - service: rest_command.mark_wilma_events_synced
+      data:
+        event_ids: "{{ unsynced | map(attribute='id') | list }}"
+
+# 3. Reconciliation: hourly catch-up for missed messages
+- id: wilma_parser_reconcile
+  alias: "Wilma — Reconcile missed messages"
+  description: "Hourly re-sends all known messages to parser (idempotent via SHA cache)."
+  mode: single
+  trigger:
+    - platform: time_pattern
+      hours: "/1"
+    - platform: homeassistant
+      event: start
+  condition:
+    - condition: state
+      entity_id: binary_sensor.wilma_parser_healthy
+      state: "on"
+  action:
+    - variables:
+        messages: "{{ state_attr('sensor.wilma_card_messages', 'messages') | default([]) }}"
+    - repeat:
+        for_each: "{{ messages }}"
+        sequence:
+          - service: rest_command.parse_wilma_message
+            data:
+              message_id: "{{ repeat.item.id }}"
+              sent: "{{ repeat.item.sent }}"
+              sender: "{{ repeat.item.sender }}"
+              subject: "{{ repeat.item.subject }}"
+              body: "{{ repeat.item.body | default('') }}"

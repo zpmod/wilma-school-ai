@@ -1,0 +1,29 @@
+# Example: REST commands for Wilma parser
+#
+# Add to your configuration.yaml under `rest_command:`
+
+rest_command:
+  parse_wilma_message:
+    url: "http://localhost:8090/parse"
+    method: POST
+    content_type: "application/json"
+    timeout: 30
+    payload: >-
+      {
+        "message_id": "{{ message_id }}",
+        "sent": "{{ sent }}",
+        "sender": {{ sender | to_json }},
+        "subject": {{ subject | to_json }},
+        "body": {{ body | to_json }},
+        "wait": false
+      }
+
+  mark_wilma_events_synced:
+    url: "http://localhost:8090/events/mark-synced"
+    method: POST
+    content_type: "application/json"
+    timeout: 10
+    payload: >-
+      {
+        "event_ids": {{ event_ids | to_json }}
+      }

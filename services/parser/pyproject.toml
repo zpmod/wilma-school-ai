@@ -1,0 +1,15 @@
+[project]
+name = "wilma-parser"
+version = "0.1.0"
+description = "LLM-driven extractor for actionable events from free-text Wilma messages"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "httpx>=0.28",
+  "pydantic>=2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

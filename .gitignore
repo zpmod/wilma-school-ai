@@ -1,0 +1,47 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets & credentials — NEVER commit
+secrets.yaml
+config/secrets.yaml
+*.secret
+
+# Parser database (contains parsed message data)
+services/parser/data/*.db
+services/parser/data/*.db-wal
+services/parser/data/*.db-shm
+data/*.db
+
+# Environment files
+.env
+.env.local
+!.env.example
+
+# Logs
+log/
+
+# Test output
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+log/

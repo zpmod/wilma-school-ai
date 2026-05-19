@@ -1,0 +1,14 @@
+{
+  "domain": "wilma_school_ai",
+  "name": "Wilma School AI",
+  "documentation": "https://github.com/zpmod/wilma-school-ai",
+  "issue_tracker": "https://github.com/zpmod/wilma-school-ai/issues",
+  "dependencies": [],
+  "codeowners": ["@zpmod"],
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "config_flow": true,
+  "version": "0.1.0",
+  "homeassistant": "2024.1.0",
+  "requirements": ["beautifulsoup4>=4.12.0"]
+}
