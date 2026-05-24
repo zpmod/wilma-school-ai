@@ -82,3 +82,24 @@ content: >
   _{{ m.subject }}_
   {% endfor %}
 ```
+
+## Multi-Child: Per-child Events
+
+When using per-child REST sensors (see `rest_sensors.yaml`), display events
+filtered to a specific child:
+
+```yaml
+type: markdown
+title: "Tapahtumat — Lapsi 1"
+content: >
+  {% set events = state_attr('sensor.wilma_parser_events_child1', 'events') or [] %}
+  {% set upcoming = events | selectattr('date_start', 'ge', now().strftime('%Y-%m-%d')) | list %}
+  {% if upcoming %}
+  {% for e in upcoming[:10] %}
+  - **{{ e.date_start[8:] }}.{{ e.date_start[5:7] }}** — {{ e.title }}
+  {%- if e.notes %} · _{{ e.notes[:60] }}_{% endif %}
+  {% endfor %}
+  {% else %}
+  Ei tulevia tapahtumia.
+  {% endif %}
+```

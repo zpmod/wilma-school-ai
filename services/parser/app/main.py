@@ -27,6 +27,9 @@ class ParseRequest(BaseModel):
     sender: str
     subject: str
     body: str
+    child_id: str = Field(
+        "default", description="Child identifier for multi-child support."
+    )
     today: str | None = Field(
         None, description="Reference date (YYYY-MM-DD). Defaults to sent's date."
     )
@@ -103,12 +106,13 @@ async def _process_parse_background(req: ParseRequest, body_sha: str) -> None:
         events=kept_pre,
         dropped_count=len(dropped),
         source_sent_at=req.sent,
+        child_id=req.child_id,
     )
 
     # Cross-message correlation.
     for ev in newly_inserted:
         title_key = normalize_title(ev.get("title", ""))
-        match = store.find_correlated(title_key, exclude_message_id=req.message_id)
+        match = store.find_correlated(title_key, exclude_message_id=req.message_id, child_id=req.child_id)
         if match:
             updated = store.update_event_correlation(
                 event_id=match["id"],
@@ -150,6 +154,7 @@ async def _process_parse_sync(req: ParseRequest, body_sha: str) -> ParseResponse
         events=kept_pre,
         dropped_count=len(dropped),
         source_sent_at=req.sent,
+        child_id=req.child_id,
     )
 
     # Cross-message correlation.
@@ -157,7 +162,7 @@ async def _process_parse_sync(req: ParseRequest, body_sha: str) -> ParseResponse
     still_new: list[dict[str, Any]] = []
     for ev in newly_inserted:
         title_key = normalize_title(ev.get("title", ""))
-        match = store.find_correlated(title_key, exclude_message_id=req.message_id)
+        match = store.find_correlated(title_key, exclude_message_id=req.message_id, child_id=req.child_id)
         if match:
             updated = store.update_event_correlation(
                 event_id=match["id"],
@@ -193,9 +198,9 @@ async def _process_parse_sync(req: ParseRequest, body_sha: str) -> ParseResponse
 @app.post("/parse", response_model=ParseResponse)
 async def parse(req: ParseRequest, background_tasks: BackgroundTasks) -> ParseResponse:
     body_sha = _hash(req.body)
-    cached = None if req.force else store.get_cached(body_sha)
+    cached = None if req.force else store.get_cached(body_sha, child_id=req.child_id)
     if cached:
-        evs = [Event(**e) for e in store.list_events_for_message(req.message_id)]
+        evs = [Event(**e) for e in store.list_events_for_message(req.message_id, child_id=req.child_id)]
         return ParseResponse(
             message_id=req.message_id,
             cached=True,
@@ -233,8 +238,11 @@ class EventRevision(BaseModel):
 
 
 @app.get("/events")
-def events(since: str | None = Query(None, description="YYYY-MM-DD lower bound")) -> dict[str, Any]:
-    rows = store.list_events(since=since)
+def events(
+    since: str | None = Query(None, description="YYYY-MM-DD lower bound"),
+    child_id: str | None = Query(None, description="Filter by child"),
+) -> dict[str, Any]:
+    rows = store.list_events(since=since, child_id=child_id)
     # SQLite stores booleans as ints; coerce for JSON consumers.
     for r in rows:
         for k in ("all_day", "is_week_event", "action_required"):
@@ -243,9 +251,11 @@ def events(since: str | None = Query(None, description="YYYY-MM-DD lower bound")
 
 
 @app.get("/events/unsynced")
-def events_unsynced() -> dict[str, Any]:
+def events_unsynced(
+    child_id: str | None = Query(None, description="Filter by child"),
+) -> dict[str, Any]:
     """Return events not yet synced to HA calendar. Used by polling automation."""
-    rows = store.list_unsynced_events()
+    rows = store.list_unsynced_events(child_id=child_id)
     for r in rows:
         for k in ("all_day", "is_week_event", "action_required"):
             r[k] = bool(r[k])
@@ -274,13 +284,14 @@ class DenylistRequest(BaseModel):
     title: str
     date_start: str
     reason: str | None = None
+    child_id: str = "default"
 
 
 @app.post("/denylist")
 def denylist_add(req: DenylistRequest) -> dict[str, Any]:
     """Mark an extraction as wrong. Purges the event and prevents re-extraction."""
-    store.add_denylist(req.message_id, req.title, req.date_start, req.reason)
-    log.info("denylist add message_id=%s title=%r date=%s", req.message_id, req.title, req.date_start)
+    store.add_denylist(req.message_id, req.title, req.date_start, req.reason, child_id=req.child_id)
+    log.info("denylist add message_id=%s child=%s title=%r date=%s", req.message_id, req.child_id, req.title, req.date_start)
     return {"ok": True, "stats": store.stats()}
 
 

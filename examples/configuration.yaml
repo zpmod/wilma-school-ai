@@ -15,6 +15,7 @@ rest_command:
         "sender": {{ sender | to_json }},
         "subject": {{ subject | to_json }},
         "body": {{ body | to_json }},
+        "child_id": {{ child_id | default('default') | to_json }},
         "wait": false
       }
 

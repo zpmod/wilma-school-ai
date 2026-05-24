@@ -20,6 +20,7 @@
         sender: "{{ trigger.event.data.sender }}"
         subject: "{{ trigger.event.data.subject }}"
         body: "{{ trigger.event.data.body | default('') }}"
+        child_id: "{{ trigger.event.data.child | default('default') }}"
 
 # 2. Sync parsed events to HA calendar (polls every 3 min)
 - id: wilma_parser_sync_events
@@ -87,3 +88,4 @@
               sender: "{{ repeat.item.sender }}"
               subject: "{{ repeat.item.subject }}"
               body: "{{ repeat.item.body | default('') }}"
+              child_id: "{{ repeat.item.child | default('default') }}"

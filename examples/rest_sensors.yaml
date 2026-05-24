@@ -1,6 +1,9 @@
 # Example: REST sensors for parser status
 #
 # Add to your configuration.yaml under `rest:`
+#
+# For multi-child setups, append ?child_id=<id> to the resource URL
+# to scope sensors per child. Without the parameter, all children are returned.
 
 rest:
   # Parser events — all extracted events for dashboard cards
@@ -23,6 +26,16 @@ rest:
         value_template: "{{ value_json.events | count }}"
         json_attributes:
           - events
+
+  # Example: per-child events sensor (duplicate block per child)
+  # - resource: "http://localhost:8090/events?child_id=child1"
+  #   scan_interval: 300
+  #   sensor:
+  #     - name: "Wilma Parser Events — Child 1"
+  #       unique_id: wilma_parser_events_child1
+  #       value_template: "{{ value_json.events | count }}"
+  #       json_attributes:
+  #         - events
 
   # Health check
   - resource: "http://localhost:8090/healthz"

@@ -135,6 +135,16 @@ def _init(c: sqlite3.Connection) -> None:
             c.execute(f"ALTER TABLE events ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
             pass
+    # Multi-child support: child_id on events, message_cache, and denylist.
+    for table, col_def in (
+        ("events", "child_id TEXT NOT NULL DEFAULT 'default'"),
+        ("message_cache", "child_id TEXT NOT NULL DEFAULT 'default'"),
+        ("denylist", "child_id TEXT NOT NULL DEFAULT 'default'"),
+    ):
+        try:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
     # Back-fill title_key for any existing rows that pre-date this migration.
     c.execute(
         "UPDATE events SET title_key = LOWER(REPLACE(REPLACE(title, '-', ''), ' ', ''))"
@@ -159,10 +169,11 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def get_cached(body_sha256: str) -> dict[str, Any] | None:
+def get_cached(body_sha256: str, child_id: str = "default") -> dict[str, Any] | None:
     c = get_conn()
     row = c.execute(
-        "SELECT * FROM message_cache WHERE body_sha256 = ?", (body_sha256,)
+        "SELECT * FROM message_cache WHERE body_sha256 = ? AND child_id = ?",
+        (body_sha256, child_id),
     ).fetchone()
     return dict(row) if row else None
 
@@ -176,6 +187,7 @@ def store_parse(
     events: Iterable[dict[str, Any]],
     dropped_count: int,
     source_sent_at: str | None,
+    child_id: str = "default",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Persist parse result. Returns (kept_events, newly_inserted_events).
 
@@ -192,8 +204,8 @@ def store_parse(
             """
             INSERT INTO message_cache
               (body_sha256, message_id, parsed_at, attempts, raw_response,
-               event_count, dropped_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+               event_count, dropped_count, child_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(body_sha256) DO UPDATE SET
               parsed_at = excluded.parsed_at,
               attempts = excluded.attempts,
@@ -209,6 +221,7 @@ def store_parse(
                 raw_response,
                 len(events),
                 dropped_count,
+                child_id,
             ),
         )
         for ev in events:
@@ -218,14 +231,14 @@ def store_parse(
                 continue
             # Denylist filter.
             denied = c.execute(
-                "SELECT 1 FROM denylist WHERE message_id = ? AND title_key = ? AND date_start = ?",
-                (message_id, title.lower(), date_start),
+                "SELECT 1 FROM denylist WHERE message_id = ? AND title_key = ? AND date_start = ? AND child_id = ?",
+                (message_id, title.lower(), date_start, child_id),
             ).fetchone()
             if denied:
                 continue
             existing = c.execute(
-                "SELECT 1 FROM events WHERE message_id = ? AND title = ? AND date_start = ?",
-                (message_id, title, date_start),
+                "SELECT 1 FROM events WHERE message_id = ? AND title = ? AND date_start = ? AND child_id = ?",
+                (message_id, title, date_start, child_id),
             ).fetchone()
             tkey = normalize_title(title)
             c.execute(
@@ -233,8 +246,8 @@ def store_parse(
                 INSERT INTO events
                   (message_id, body_sha256, title, title_key, date_start, date_end,
                    all_day, is_week_event, action_required, notes,
-                   source_sent_at, created_at, date_source, date_evidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   source_sent_at, created_at, date_source, date_evidence, child_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id, title, date_start) DO UPDATE SET
                   date_end = excluded.date_end,
                   all_day = excluded.all_day,
@@ -244,7 +257,8 @@ def store_parse(
                   body_sha256 = excluded.body_sha256,
                   date_source = excluded.date_source,
                   date_evidence = excluded.date_evidence,
-                  title_key = excluded.title_key
+                  title_key = excluded.title_key,
+                  child_id = excluded.child_id
                 """,
                 (
                     message_id,
@@ -261,11 +275,12 @@ def store_parse(
                     now_iso(),
                     ev.get("date_source"),
                     ev.get("date_evidence"),
+                    child_id,
                 ),
             )
             stored_row = c.execute(
-                "SELECT * FROM events WHERE message_id = ? AND title = ? AND date_start = ?",
-                (message_id, title, date_start),
+                "SELECT * FROM events WHERE message_id = ? AND title = ? AND date_start = ? AND child_id = ?",
+                (message_id, title, date_start, child_id),
             ).fetchone()
             stored = dict(stored_row) if stored_row else dict(ev)
             kept.append(stored)
@@ -274,18 +289,18 @@ def store_parse(
     return kept, newly_inserted
 
 
-def find_correlated(title_key: str, exclude_message_id: str) -> dict[str, Any] | None:
+def find_correlated(title_key: str, exclude_message_id: str, child_id: str = "default") -> dict[str, Any] | None:
     """Return the most-recent canonical event whose title_key matches,
     from a *different* source message.  Returns None if no match."""
     c = get_conn()
     row = c.execute(
         """
         SELECT * FROM events
-        WHERE title_key = ? AND message_id != ?
+        WHERE title_key = ? AND message_id != ? AND child_id = ?
         ORDER BY revision_count DESC, id DESC
         LIMIT 1
         """,
-        (title_key, exclude_message_id),
+        (title_key, exclude_message_id, child_id),
     ).fetchone()
     return dict(row) if row else None
 
@@ -418,31 +433,37 @@ def list_event_revisions(event_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def list_events_for_message(message_id: str) -> list[dict[str, Any]]:
+def list_events_for_message(message_id: str, child_id: str | None = None) -> list[dict[str, Any]]:
     c = get_conn()
-    rows = c.execute(
-        "SELECT * FROM events WHERE message_id = ? ORDER BY date_start ASC, id ASC",
-        (message_id,),
-    ).fetchall()
+    if child_id:
+        rows = c.execute(
+            "SELECT * FROM events WHERE message_id = ? AND child_id = ? ORDER BY date_start ASC, id ASC",
+            (message_id, child_id),
+        ).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT * FROM events WHERE message_id = ? ORDER BY date_start ASC, id ASC",
+            (message_id,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
-def add_denylist(message_id: str, title: str, date_start: str, reason: str | None = None) -> None:
+def add_denylist(message_id: str, title: str, date_start: str, reason: str | None = None, child_id: str = "default") -> None:
     """Add to denylist AND purge any existing event with the same key."""
     key = title.lower().strip()
     with tx() as c:
         c.execute(
             """
-            INSERT INTO denylist (message_id, title_key, date_start, added_at, reason)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO denylist (message_id, title_key, date_start, added_at, reason, child_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, title_key, date_start) DO UPDATE SET
               added_at = excluded.added_at, reason = excluded.reason
             """,
-            (message_id, key, date_start, now_iso(), reason),
+            (message_id, key, date_start, now_iso(), reason, child_id),
         )
         c.execute(
-            "DELETE FROM events WHERE message_id = ? AND LOWER(title) = ? AND date_start = ?",
-            (message_id, key, date_start),
+            "DELETE FROM events WHERE message_id = ? AND LOWER(title) = ? AND date_start = ? AND child_id = ?",
+            (message_id, key, date_start, child_id),
         )
 
 
@@ -452,18 +473,21 @@ def list_denylist() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def list_events(since: str | None = None) -> list[dict[str, Any]]:
+def list_events(since: str | None = None, child_id: str | None = None) -> list[dict[str, Any]]:
     c = get_conn()
+    conditions: list[str] = []
+    params: list[str] = []
     if since:
-        rows = c.execute(
-            "SELECT * FROM events WHERE date_start >= ? OR (date_end IS NOT NULL AND date_end >= ?) "
-            "ORDER BY date_start ASC, id ASC",
-            (since, since),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM events ORDER BY date_start ASC, id ASC"
-        ).fetchall()
+        conditions.append("(date_start >= ? OR (date_end IS NOT NULL AND date_end >= ?))")
+        params.extend([since, since])
+    if child_id:
+        conditions.append("child_id = ?")
+        params.append(child_id)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = c.execute(
+        f"SELECT * FROM events{where} ORDER BY date_start ASC, id ASC",
+        params,
+    ).fetchall()
     result: list[dict[str, Any]] = []
     for r in rows:
         row = dict(r)
@@ -490,12 +514,18 @@ def stats() -> dict[str, Any]:
     return {"cached_messages": cached, "events": ev, "denylisted": dl}
 
 
-def list_unsynced_events() -> list[dict[str, Any]]:
+def list_unsynced_events(child_id: str | None = None) -> list[dict[str, Any]]:
     """Return events where synced_to_cal = 0 (not yet pushed to HA calendar)."""
     c = get_conn()
-    rows = c.execute(
-        "SELECT * FROM events WHERE synced_to_cal = 0 ORDER BY date_start ASC, id ASC"
-    ).fetchall()
+    if child_id:
+        rows = c.execute(
+            "SELECT * FROM events WHERE synced_to_cal = 0 AND child_id = ? ORDER BY date_start ASC, id ASC",
+            (child_id,),
+        ).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT * FROM events WHERE synced_to_cal = 0 ORDER BY date_start ASC, id ASC"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

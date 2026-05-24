@@ -18,9 +18,8 @@ A Home Assistant custom integration that connects to [Wilma](https://www.visma.f
 
 The fastest way to try the integration. No Home Assistant, Docker, or Ollama required.
 
-**macOS / Linux:**
 ```bash
-git clone https://github.com/zpmod/wilma-school-ai.git
+git clone https://github.com/YOUR_USERNAME/wilma-school-ai.git
 cd wilma-school-ai
 ./install.sh              # installs Python 3.11+, venv, dependencies
 # Edit .env with your Wilma credentials
@@ -31,19 +30,6 @@ cd wilma-school-ai
 ./wilma-cli homework      # recent homework
 ```
 
-**Windows (PowerShell):**
-```powershell
-git clone https://github.com/zpmod/wilma-school-ai.git
-cd wilma-school-ai
-.\install.ps1             # installs Python 3.11+, venv, dependencies
-# Edit .env with your Wilma credentials
-.\wilma-cli.cmd children  # verify login works
-.\wilma-cli.cmd schedule  # this week's timetable
-```
-
-> If you get an execution policy error, run first:
-> `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
-
 Add `--json` to any command for machine-readable output. Use `--help` for all options.
 
 ## Full Setup — Home Assistant + LLM Parser
@@ -51,61 +37,20 @@ Add `--json` to any command for machine-readable output. Use `--help` for all op
 For the complete stack (HA integration + AI-powered message parsing):
 
 ```bash
-./install.sh --full       # CLI + Podman + Ollama model pull + parser sidecar
+./install.sh --full       # CLI + Podman parser + Ollama model pull
 ```
 
-On Windows:
-```powershell
-.\install.ps1 -Full
-```
+This additionally:
+- Checks for Podman (installs via brew/apt if missing)
+- Pulls the Finnish LLM model (~5 GB on first run)
+- Builds and starts the parser sidecar container
 
-The script handles everything: Python, Podman, Ollama, model download, and starting the parser container. Once it completes:
+Then:
+1. Copy `custom_components/wilma_school_ai/` into your HA `config/custom_components/`
+2. Restart Home Assistant
+3. Add the integration via Settings → Devices & Services → Add Integration → "Wilma School AI"
 
-### 1. Install the Integration into Home Assistant
-
-**Via HACS** (once published):
-- HACS → Integrations → + → search "Wilma School AI" → Install → Restart HA
-
-**Manual:**
-```bash
-cp -r custom_components/wilma_school_ai/ <your-ha-config>/custom_components/
-# Restart Home Assistant
-```
-
-### 2. Configure
-
-1. Settings → Devices & Services → Add Integration
-2. Search "Wilma School AI"
-3. Enter your school's Wilma URL (e.g., `https://yourschool.inschool.fi`)
-4. Enter your Wilma username and password
-5. Select which children to track
-
-### 3. Add Automations
-
-Copy the example automations from [`examples/automations.yaml`](examples/automations.yaml) and the REST configuration from [`examples/configuration.yaml`](examples/configuration.yaml) into your HA config.
-
-### 4. Verify
-
-After the first poll cycle (default: 4 hours), check:
-- `calendar.wilma_parsed` — contains extracted events
-- `binary_sensor.wilma_parser_healthy` — should be "on"
-- `sensor.wilma_parser_unsynced` — events pending sync
-
-### Raspberry Pi Notes
-
-On a Raspberry Pi 5 (8 GB), parsing takes 5–20 minutes per message. This is normal — the async architecture handles it gracefully:
-- Messages are queued immediately
-- Results appear in your calendar within ~20 minutes
-- The hourly reconciliation catches anything missed during downtime
-
-For Pi, use host networking in `podman-compose.override.yml`:
-```yaml
-services:
-  wilma-parser:
-    network_mode: host
-    environment:
-      - OLLAMA_BASE_URL=http://localhost:11434
-```
+See [docs/quickstart.md](docs/quickstart.md) for detailed instructions.
 
 ## Requirements
 
@@ -123,14 +68,14 @@ Recommended LLM model: `Llama-Poro-2-8B-Instruct` (Q4_K_M quantization)
 
 ```
 ┌─────────────────────────┐   ┌──────────────────────────┐
-│ Home Assistant          │   │ wilma-parser (sidecar)   │
-│  • wilma_school_ai      │──▶│  FastAPI + SQLite cache  │
-│  • automations          │◀──│  POST /parse (async)     │
-│  • calendar entities    │   │  GET /events/unsynced    │
+│ Home Assistant           │   │ wilma-parser (sidecar)   │
+│  • wilma_school_ai      │──▶│  FastAPI + SQLite cache   │
+│  • automations          │◀──│  POST /parse (async)      │
+│  • calendar entities    │   │  GET /events/unsynced     │
 └─────────────────────────┘   └────────────┬─────────────┘
                                            │
                               ┌─────────────▼─────────────┐
-                              │ Ollama (local)            │
+                              │ Ollama (local)             │
                               │  Llama-Poro-2-8B Q4_K_M   │
                               └───────────────────────────┘
 ```
@@ -149,27 +94,55 @@ The CLI client (`wilma-cli`) talks directly to Wilma and works independently of 
 
 Options: `--child ID` (select child), `--days N` (range), `--json` (raw output), `--limit N` (messages)
 
-## Security & Credential Storage
+## Multi-Child Support
 
-**Home Assistant integration**: Credentials are entered via the UI config flow and stored in HA's internal `.storage/core.config_entries` — managed by Home Assistant, not a user-editable file.
+If you have multiple children on one Wilma account, the parser supports isolating events per child using the `child_id` parameter.
 
-**CLI client**: Reads credentials from a `.env` file in the project root. This file is:
-- Listed in `.gitignore` (never committed)
-- Created by you during setup (from `.env.example`)
-- Plaintext on disk — protect with file permissions:
-  ```bash
-  chmod 600 .env
-  ```
+### How it works
 
-**Threat model**: This is a self-hosted, single-user system on a private network. The primary risk is accidental credential exposure via git. Mitigations:
-- `.gitignore` excludes `.env`, `secrets.yaml`, and all database files
-- CI PII scanner (`scripts/scan_pii.py`) catches credentials in committed files
-- Pre-commit hook runs the PII scanner locally before each commit
+1. **POST /parse** — include `"child_id": "child1"` in the request body (defaults to `"default"`)
+2. **GET /events** — append `?child_id=child1` to retrieve only that child's events
+3. **GET /events/unsynced** — same filter applies
 
-If you need stronger credential protection (shared machines, remote access), consider exporting credentials as environment variables from your shell profile instead of using a `.env` file.
+All existing data and single-child setups continue to work unchanged (`child_id` defaults to `"default"`).
+
+### HA automation example
+
+Pass `child_id` from the Wilma event trigger (requires the Wilma integration to include a `child` field in `wilma_new_message` events):
+
+```yaml
+action:
+  - service: rest_command.parse_wilma_message
+    data:
+      message_id: "{{ trigger.event.data.id }}"
+      sent: "{{ trigger.event.data.sent }}"
+      sender: "{{ trigger.event.data.sender }}"
+      subject: "{{ trigger.event.data.subject }}"
+      body: "{{ trigger.event.data.body | default('') }}"
+      child_id: "{{ trigger.event.data.child | default('default') }}"
+```
+
+### Per-child dashboard cards
+
+Create separate REST sensors per child (see [`examples/rest_sensors.yaml`](examples/rest_sensors.yaml)):
+
+```yaml
+rest:
+  - resource: "http://localhost:8090/events?child_id=child1"
+    scan_interval: 300
+    sensor:
+      - name: "Wilma Events — Child 1"
+        unique_id: wilma_parser_events_child1
+        value_template: "{{ value_json.events | count }}"
+        json_attributes:
+          - events
+```
+
+Then use `sensor.wilma_parser_events_child1` in your Lovelace cards — see [`examples/lovelace_cards.yaml`](examples/lovelace_cards.yaml) for a full template.
 
 ## Documentation
 
+- [Quick Start Guide](docs/quickstart.md)
 - [How It Works — Technical Deep Dive](docs/how-it-works.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Example Automations](examples/)
