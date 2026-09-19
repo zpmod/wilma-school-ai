@@ -109,6 +109,20 @@ def _init(c: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS revisions_event_id ON event_revisions(event_id);
+
+        -- Failed parse attempts. A message that errors writes nothing to
+        -- message_cache, so without this it is indistinguishable from one never
+        -- seen, and the hourly reconciliation re-queues it forever.
+        CREATE TABLE IF NOT EXISTS parse_failures (
+            body_sha256     TEXT NOT NULL,
+            child_id        TEXT NOT NULL DEFAULT 'default',
+            message_id      TEXT NOT NULL,
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            first_failed_at TEXT NOT NULL,
+            last_failed_at  TEXT NOT NULL,
+            last_error      TEXT,
+            PRIMARY KEY (body_sha256, child_id)
+        );
         """
     )
     # Idempotent additive migrations for pre-existing DBs.
@@ -176,6 +190,56 @@ def get_cached(body_sha256: str, child_id: str = "default") -> dict[str, Any] | 
         (body_sha256, child_id),
     ).fetchone()
     return dict(row) if row else None
+
+
+def record_failure(
+    *, body_sha256: str, message_id: str, child_id: str, error: str
+) -> int:
+    """Count one failed parse and return the running total for this message."""
+    stamp = now_iso()
+    with tx() as c:
+        c.execute(
+            """
+            INSERT INTO parse_failures (body_sha256, child_id, message_id,
+                                        attempts, first_failed_at, last_failed_at, last_error)
+            VALUES (?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(body_sha256, child_id) DO UPDATE SET
+                attempts       = attempts + 1,
+                last_failed_at = excluded.last_failed_at,
+                last_error     = excluded.last_error
+            """,
+            (body_sha256, child_id, message_id, stamp, stamp, error[:500]),
+        )
+        row = c.execute(
+            "SELECT attempts FROM parse_failures WHERE body_sha256 = ? AND child_id = ?",
+            (body_sha256, child_id),
+        ).fetchone()
+    return int(row["attempts"]) if row else 1
+
+
+def get_failure(body_sha256: str, child_id: str = "default") -> dict[str, Any] | None:
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM parse_failures WHERE body_sha256 = ? AND child_id = ?",
+        (body_sha256, child_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def clear_failure(body_sha256: str, child_id: str = "default") -> None:
+    with tx() as c:
+        c.execute(
+            "DELETE FROM parse_failures WHERE body_sha256 = ? AND child_id = ?",
+            (body_sha256, child_id),
+        )
+
+
+def list_failures() -> list[dict[str, Any]]:
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM parse_failures ORDER BY attempts DESC, last_failed_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def store_parse(
@@ -511,7 +575,13 @@ def stats() -> dict[str, Any]:
     cached = c.execute("SELECT COUNT(*) FROM message_cache").fetchone()[0]
     ev = c.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     dl = c.execute("SELECT COUNT(*) FROM denylist").fetchone()[0]
-    return {"cached_messages": cached, "events": ev, "denylisted": dl}
+    failing = c.execute("SELECT COUNT(*) FROM parse_failures").fetchone()[0]
+    return {
+        "cached_messages": cached,
+        "events": ev,
+        "denylisted": dl,
+        "failing_messages": failing,
+    }
 
 
 def list_unsynced_events(child_id: str | None = None) -> list[dict[str, Any]]:

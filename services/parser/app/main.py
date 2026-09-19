@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
@@ -19,6 +20,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("wilma-parser")
 
 app = FastAPI(title="wilma-parser", version="0.1.0")
+
+# A message that keeps failing must eventually be left alone. Callers such as
+# the hourly reconciliation re-send every known message, so without a cap a
+# permanently failing message is retried forever and the LLM never goes idle.
+MAX_PARSE_ATTEMPTS = int(os.environ.get("WILMA_PARSER_MAX_ATTEMPTS", "3"))
+
+# Bodies currently being parsed, so the same message is not queued twice while
+# an earlier attempt is still running.
+_in_flight: set[tuple[str, str]] = set()
 
 
 class ParseRequest(BaseModel):
@@ -66,11 +76,13 @@ class ParseResponse(BaseModel):
     message_id: str
     cached: bool
     attempts: int
-    events: list[Event]
+    events: list[Event] = []
     new_events: list[Event] = []
     updated_events: list[Event] = []
     dropped: list[dict[str, Any]] = []
     queued: bool = False
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 def _hash(body: str) -> str:
@@ -86,13 +98,37 @@ def _today_for(req: ParseRequest) -> str:
 
 async def _process_parse_background(req: ParseRequest, body_sha: str) -> None:
     """Background task: run LLM extraction, post-process, store results."""
+    key = (body_sha, req.child_id)
+    try:
+        await _run_parse(req, body_sha)
+    finally:
+        _in_flight.discard(key)
+
+
+async def _run_parse(req: ParseRequest, body_sha: str) -> None:
     today = _today_for(req)
     try:
         raw_events, debug = await extract_events(
             sent=req.sent, sender=req.sender, subject=req.subject, body=req.body, today=today
         )
-    except LLMError as e:
-        log.error("LLM extraction failed for %s: %s", req.message_id, e)
+    except Exception as e:
+        # Deliberately broad: timeouts and transport errors are not LLMError,
+        # and an unrecorded failure is re-queued forever by the caller.
+        count = store.record_failure(
+            body_sha256=body_sha,
+            message_id=req.message_id,
+            child_id=req.child_id,
+            error=f"{type(e).__name__}: {e}",
+        )
+        log.error(
+            "LLM extraction failed for %s (attempt %d/%d): %s: %s",
+            req.message_id, count, MAX_PARSE_ATTEMPTS, type(e).__name__, e,
+        )
+        if count >= MAX_PARSE_ATTEMPTS:
+            log.error(
+                "message_id=%s has failed %d times and will be skipped until "
+                "re-sent with force=true", req.message_id, count,
+            )
         return
 
     kept_pre, dropped = filter_events(raw_events)
@@ -130,6 +166,7 @@ async def _process_parse_background(req: ParseRequest, body_sha: str) -> None:
         "background parse done message_id=%s attempts=%d kept=%d new=%d dropped=%d",
         req.message_id, debug["attempts"], len(kept), len(newly_inserted), len(dropped),
     )
+    store.clear_failure(body_sha, req.child_id)
 
 
 async def _process_parse_sync(req: ParseRequest, body_sha: str) -> ParseResponse:
@@ -139,8 +176,17 @@ async def _process_parse_sync(req: ParseRequest, body_sha: str) -> ParseResponse
         raw_events, debug = await extract_events(
             sent=req.sent, sender=req.sender, subject=req.subject, body=req.body, today=today
         )
-    except LLMError as e:
-        log.error("LLM extraction failed for %s: %s", req.message_id, e)
+    except Exception as e:
+        count = store.record_failure(
+            body_sha256=body_sha,
+            message_id=req.message_id,
+            child_id=req.child_id,
+            error=f"{type(e).__name__}: {e}",
+        )
+        log.error(
+            "LLM extraction failed for %s (attempt %d/%d): %s: %s",
+            req.message_id, count, MAX_PARSE_ATTEMPTS, type(e).__name__, e,
+        )
         raise HTTPException(status_code=502, detail=f"LLM error: {e}")
 
     kept_pre, dropped = filter_events(raw_events)
@@ -184,6 +230,7 @@ async def _process_parse_sync(req: ParseRequest, body_sha: str) -> ParseResponse
         req.message_id, debug["attempts"], len(kept), len(still_new),
         len(correlated_updates), len(dropped),
     )
+    store.clear_failure(body_sha, req.child_id)
     return ParseResponse(
         message_id=req.message_id,
         cached=False,
@@ -209,10 +256,37 @@ async def parse(req: ParseRequest, background_tasks: BackgroundTasks) -> ParseRe
             new_events=[],
         )
 
+    key = (body_sha, req.child_id)
+
+    if not req.force:
+        failure = store.get_failure(body_sha, req.child_id)
+        if failure and failure["attempts"] >= MAX_PARSE_ATTEMPTS:
+            return ParseResponse(
+                message_id=req.message_id,
+                cached=False,
+                attempts=failure["attempts"],
+                skipped=True,
+                skip_reason=(
+                    f"failed {failure['attempts']} times, last error: "
+                    f"{failure['last_error']}"
+                ),
+            )
+
+        if key in _in_flight:
+            return ParseResponse(
+                message_id=req.message_id,
+                cached=False,
+                attempts=0,
+                queued=True,
+                skipped=True,
+                skip_reason="already being parsed",
+            )
+
     if not req.wait:
         # Fire-and-forget: queue LLM processing in background so the HTTP
         # response returns immediately.  HA picks up results via the
         # GET /events/unsynced polling endpoint.
+        _in_flight.add(key)
         background_tasks.add_task(_process_parse_background, req, body_sha)
         return ParseResponse(
             message_id=req.message_id,
@@ -224,7 +298,31 @@ async def parse(req: ParseRequest, background_tasks: BackgroundTasks) -> ParseRe
         )
 
     # Synchronous mode (default): wait for LLM and return results inline.
-    return await _process_parse_sync(req, body_sha)
+    _in_flight.add(key)
+    try:
+        return await _process_parse_sync(req, body_sha)
+    finally:
+        _in_flight.discard(key)
+
+
+@app.get("/failures")
+def failures() -> dict[str, Any]:
+    """Messages that have failed to parse, and whether they are now skipped."""
+    items = store.list_failures()
+    for item in items:
+        item["skipped"] = item["attempts"] >= MAX_PARSE_ATTEMPTS
+    return {"max_attempts": MAX_PARSE_ATTEMPTS, "failures": items}
+
+
+@app.delete("/failures/{message_id}")
+def clear_failures(message_id: str) -> dict[str, Any]:
+    """Reset the failure count so a message is eligible for parsing again."""
+    cleared = 0
+    for item in store.list_failures():
+        if item["message_id"] == message_id:
+            store.clear_failure(item["body_sha256"], item["child_id"])
+            cleared += 1
+    return {"message_id": message_id, "cleared": cleared}
 
 
 class EventRevision(BaseModel):
